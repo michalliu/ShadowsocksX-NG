@@ -7,6 +7,8 @@
 //
 
 import Cocoa
+import RxCocoa
+import RxSwift
 
 class PreferencesWindowController: NSWindowController
     , NSTableViewDataSource, NSTableViewDelegate {
@@ -14,9 +16,11 @@ class PreferencesWindowController: NSWindowController
     @IBOutlet weak var profilesTableView: NSTableView!
     
     @IBOutlet weak var profileBox: NSBox!
+    @IBOutlet weak var kcptunProfileBox: NSBox!
     
     @IBOutlet weak var hostTextField: NSTextField!
     @IBOutlet weak var portTextField: NSTextField!
+    @IBOutlet weak var kcptunPortTextField: NSTextField!
     @IBOutlet weak var methodTextField: NSComboBox!
     
     @IBOutlet weak var passwordTextField: NSTextField!
@@ -24,7 +28,15 @@ class PreferencesWindowController: NSWindowController
     
     @IBOutlet weak var otaCheckBoxBtn: NSButton!
     
-    @IBOutlet weak var copyURLBtn: NSButton!
+    @IBOutlet weak var kcptunCheckBoxBtn: NSButton!
+    @IBOutlet weak var kcptunCryptComboBox: NSComboBox!
+    @IBOutlet weak var kcptunKeyTextField: NSTextField!
+    @IBOutlet weak var kcptunModeComboBox: NSComboBox!
+    @IBOutlet weak var kcptunNocompCheckBoxBtn: NSButton!
+    @IBOutlet weak var kcptunDatashardTextField: NSTextField!
+    @IBOutlet weak var kcptunParityshardTextField: NSTextField!
+    @IBOutlet weak var kcptunMTUTextField: NSTextField!
+    @IBOutlet weak var kcptunArgumentsTextField: NSTextField!
     
     @IBOutlet weak var removeButton: NSButton!
     let tableViewDragType: String = "ss.server.profile.data"
@@ -33,27 +45,60 @@ class PreferencesWindowController: NSWindowController
     var profileMgr: ServerProfileManager!
     
     var editingProfile: ServerProfile!
+    
+    var enabledKcptunSubDisosable: Disposable?
 
 
     override func windowDidLoad() {
         super.windowDidLoad()
 
         // Implement this method to handle any initialization after your window controller's window has been loaded from its nib file.
+        
         defaults = UserDefaults.standard
         profileMgr = ServerProfileManager.instance
         
         methodTextField.addItems(withObjectValues: [
+            "aes-128-gcm",
+            "aes-192-gcm",
+            "aes-256-gcm",
             "aes-128-cfb",
             "aes-192-cfb",
             "aes-256-cfb",
-            "des-cfb",
+            "aes-128-ctr",
+            "aes-192-ctr",
+            "aes-256-ctr",
+            "camellia-128-cfb",
+            "camellia-192-cfb",
+            "camellia-256-cfb",
             "bf-cfb",
-            "cast5-cfb",
-            "rc4-md5",
-            "chacha20",
+            "chacha20-ietf-poly1305",
             "salsa20",
-            "rc4",
-            "table",
+            "chacha20",
+            "chacha20-ietf",
+            "rc4-md5",
+            ])
+        
+        kcptunCryptComboBox.addItems(withObjectValues: [
+            "none",
+            "aes",
+            "aes-128",
+            "aes-192",
+            "salsa20",
+            "blowfish",
+            "twofish",
+            "cast5",
+            "3des",
+            "tea",
+            "xtea",
+            "xor",
+            ])
+        
+        kcptunModeComboBox.addItems(withObjectValues: [
+            "default",
+            "normal",
+            "fast",
+            "fast2",
+            "fast3",
             ])
         
         profilesTableView.reloadData()
@@ -62,6 +107,7 @@ class PreferencesWindowController: NSWindowController
     
     override func awakeFromNib() {
         profilesTableView.register(forDraggedTypes: [tableViewDragType])
+        profilesTableView.allowsMultipleSelection = true
     }
     
     @IBAction func addProfile(_ sender: NSButton) {
@@ -84,13 +130,20 @@ class PreferencesWindowController: NSWindowController
     }
     
     @IBAction func removeProfile(_ sender: NSButton) {
-        let index = profilesTableView.selectedRow
+        let index = Int(profilesTableView.selectedRowIndexes.first!)
+        var deleteCount = 0
         if index >= 0 {
             profilesTableView.beginUpdates()
-            profileMgr.profiles.remove(at: index)
-            profilesTableView.removeRows(at: IndexSet(integer: index), withAnimation: .effectFade)
+            for (_, toDeleteIndex) in profilesTableView.selectedRowIndexes.enumerated() {
+                print(profileMgr.profiles.count)
+                profileMgr.profiles.remove(at: toDeleteIndex - deleteCount)
+                profilesTableView.removeRows(at: IndexSet(integer: toDeleteIndex - deleteCount), withAnimation: .effectFade)
+                deleteCount += 1
+            }
             profilesTableView.endUpdates()
         }
+        self.profilesTableView.scrollRowToVisible(index-1)
+        self.profilesTableView.selectRowIndexes(IndexSet(integer: index-1), byExtendingSelection: false)
         updateProfileBoxVisible()
     }
     
@@ -107,11 +160,32 @@ class PreferencesWindowController: NSWindowController
 
         
         NotificationCenter.default
-            .post(name: Notification.Name(rawValue: NOTIFY_SERVER_PROFILES_CHANGED), object: nil)
+            .post(name: NOTIFY_SERVER_PROFILES_CHANGED, object: nil)
     }
     
     @IBAction func cancel(_ sender: NSButton) {
         window?.performClose(self)
+    }
+    
+    @IBAction func duplicate(_ sender: Any) {
+        var copyCount = 0
+        for (_, toDuplicateIndex) in profilesTableView.selectedRowIndexes.enumerated() {
+            print(profileMgr.profiles.count)
+            let profile = profileMgr.profiles[toDuplicateIndex + copyCount]
+            let duplicateProfile = profile.copy() as! ServerProfile
+            duplicateProfile.uuid = UUID().uuidString
+            profileMgr.profiles.insert(duplicateProfile, at:toDuplicateIndex + copyCount)
+            
+            profilesTableView.beginUpdates()
+            let index = IndexSet(integer: toDuplicateIndex + copyCount)
+            profilesTableView.insertRows(at: index, withAnimation: .effectFade)
+            self.profilesTableView.scrollRowToVisible(toDuplicateIndex + copyCount)
+            self.profilesTableView.selectRowIndexes(index, byExtendingSelection: false)
+            profilesTableView.endUpdates()
+            
+            copyCount += 1
+        }
+        updateProfileBoxVisible()
     }
     
     @IBAction func copyCurrentProfileURL2Pasteboard(_ sender: NSButton) {
@@ -135,7 +209,7 @@ class PreferencesWindowController: NSWindowController
     }
     
     func updateProfileBoxVisible() {
-        if profileMgr.profiles.count <= 1 {
+        if profileMgr.profiles.count <= 0 {
             removeButton.isEnabled = false
         }else{
             removeButton.isEnabled = true
@@ -150,8 +224,20 @@ class PreferencesWindowController: NSWindowController
     
     func bindProfile(_ index:Int) {
         NSLog("bind profile \(index)")
+        if let dis = enabledKcptunSubDisosable {
+            dis.dispose()
+            enabledKcptunSubDisosable = Optional.none
+        }
         if index >= 0 && index < profileMgr.profiles.count {
             editingProfile = profileMgr.profiles[index]
+            
+            
+            enabledKcptunSubDisosable = editingProfile.rx.observeWeakly(Bool.self, "enabledKcptun")
+                .subscribe(onNext: { v in
+                    if let enabled = v {
+                        self.portTextField.isEnabled = !enabled
+                    }
+            })
             
             hostTextField.bind("value", to: editingProfile, withKeyPath: "serverHost"
                 , options: [NSContinuouslyUpdatesValueBindingOption: true])
@@ -168,6 +254,40 @@ class PreferencesWindowController: NSWindowController
             
             otaCheckBoxBtn.bind("value", to: editingProfile, withKeyPath: "ota"
                 , options: [NSContinuouslyUpdatesValueBindingOption: true])
+            
+            // --------------------------------------------------
+            // Kcptun
+            kcptunCheckBoxBtn.bind("value", to: editingProfile, withKeyPath: "enabledKcptun"
+                , options: [NSContinuouslyUpdatesValueBindingOption: true])
+            
+            kcptunPortTextField.bind("value", to: editingProfile, withKeyPath: "serverPort"
+                , options: [NSContinuouslyUpdatesValueBindingOption: true])
+            
+            kcptunProfileBox.bind("Hidden", to: editingProfile, withKeyPath: "enabledKcptun"
+                , options: [NSContinuouslyUpdatesValueBindingOption: false,
+                            NSValueTransformerNameBindingOption: NSValueTransformerName.negateBooleanTransformerName])
+            
+            kcptunNocompCheckBoxBtn.bind("value", to: editingProfile, withKeyPath: "kcptunProfile.nocomp", options: nil)
+            
+            kcptunModeComboBox.bind("value", to: editingProfile, withKeyPath: "kcptunProfile.mode", options: nil)
+            
+            kcptunCryptComboBox.bind("value", to: editingProfile, withKeyPath: "kcptunProfile.crypt", options: nil)
+            
+            kcptunKeyTextField.bind("value", to: editingProfile, withKeyPath: "kcptunProfile.key"
+                , options: [NSContinuouslyUpdatesValueBindingOption: true])
+            
+            kcptunDatashardTextField.bind("value", to: editingProfile, withKeyPath: "kcptunProfile.datashard"
+                , options: [NSContinuouslyUpdatesValueBindingOption: true])
+            
+            kcptunParityshardTextField.bind("value", to: editingProfile, withKeyPath: "kcptunProfile.parityshard"
+                , options: [NSContinuouslyUpdatesValueBindingOption: true])
+            
+            kcptunMTUTextField.bind("value", to: editingProfile, withKeyPath: "kcptunProfile.mtu"
+                , options: [NSContinuouslyUpdatesValueBindingOption: true])
+            
+            kcptunArgumentsTextField.bind("value", to: editingProfile, withKeyPath: "kcptunProfile.arguments"
+                , options: [NSContinuouslyUpdatesValueBindingOption: true])
+            
         } else {
             editingProfile = nil
             hostTextField.unbind("value")
@@ -179,6 +299,8 @@ class PreferencesWindowController: NSWindowController
             remarkTextField.unbind("value")
             
             otaCheckBoxBtn.unbind("value")
+            
+            kcptunCheckBoxBtn.unbind("value")
         }
     }
     
